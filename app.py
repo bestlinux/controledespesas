@@ -22,8 +22,10 @@ st.set_page_config(
     layout="wide",
 )
 
-# Inicializa o banco de dados SQLite
-init_db()
+# Inicializa o banco de dados no Turso Cloud (apenas uma vez por sessão)
+if "db_initialized" not in st.session_state:
+    init_db()
+    st.session_state["db_initialized"] = True
 
 
 def format_brl(valor: float) -> str:

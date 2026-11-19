@@ -152,6 +152,19 @@ def init_db() -> None:
             (),
         ),
         (
+            """
+            CREATE TABLE IF NOT EXISTS semanal_receitas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                descricao TEXT NOT NULL,
+                valor REAL NOT NULL,
+                data_receita TEXT NOT NULL,
+                periodo_semana TEXT NOT NULL DEFAULT '',
+                criado_em TEXT NOT NULL
+            )
+            """,
+            (),
+        ),
+        (
             "INSERT OR IGNORE INTO cartao_config (id, valor_fatura, data_fechamento) VALUES (1, 0.0, ?)",
             (hoje.isoformat(),),
         ),
@@ -275,21 +288,80 @@ def listar_despesas_semanais(data_inicio: date = None, data_fim: date = None) ->
     )
 
 
-def calcular_saldo_semanal(valor_permitido: float, data_inicio: date, data_fim: date) -> Tuple[float, float]:
-    """Retorna (total_gasto_na_semana, valor_disponivel_apos_subtracao)."""
+def calcular_saldo_semanal(valor_permitido: float, data_inicio: date, data_fim: date) -> Tuple[float, float, float]:
+    """Retorna (total_gasto_na_semana, total_receitas_na_semana, saldo_restante)."""
     periodo = _format_periodo(data_inicio, data_fim)
-    rows = _query(
-        """
-        SELECT COALESCE(SUM(valor), 0.0) as total_gasto
-        FROM semanal_despesas
-        WHERE (data_despesa BETWEEN ? AND ?) OR (periodo_semana = ?)
-        """,
-        (data_inicio.isoformat(), data_fim.isoformat(), periodo),
-    )
-    total_gasto = float(rows[0]["total_gasto"]) if rows else 0.0
-    saldo_restante = valor_permitido - total_gasto
-    return total_gasto, saldo_restante
+    params = (data_inicio.isoformat(), data_fim.isoformat(), periodo)
+    results = _execute_pipeline([
+        (
+            """
+            SELECT COALESCE(SUM(valor), 0.0) as total_gasto
+            FROM semanal_despesas
+            WHERE (data_despesa BETWEEN ? AND ?) OR (periodo_semana = ?)
+            """,
+            params,
+        ),
+        (
+            """
+            SELECT COALESCE(SUM(valor), 0.0) as total_receitas
+            FROM semanal_receitas
+            WHERE (data_receita BETWEEN ? AND ?) OR (periodo_semana = ?)
+            """,
+            params,
+        ),
+    ])
+    total_gasto = float(results[0][0]["total_gasto"]) if results and results[0] else 0.0
+    total_receitas = float(results[1][0]["total_receitas"]) if len(results) > 1 and results[1] else 0.0
+    saldo_restante = valor_permitido + total_receitas - total_gasto
+    return total_gasto, total_receitas, saldo_restante
 
 
 def excluir_despesa_semanal(despesa_id: int) -> None:
     _query("DELETE FROM semanal_despesas WHERE id = ?", (int(despesa_id),))
+
+
+def registrar_receita_semanal(
+    valor: float,
+    descricao: str = "Receita Semanal",
+    data_receita: date = None,
+    data_inicio_semana: date = None,
+    data_fim_semana: date = None,
+) -> None:
+    if data_receita is None:
+        data_receita = date.today()
+    periodo = ""
+    if data_inicio_semana and data_fim_semana:
+        periodo = _format_periodo(data_inicio_semana, data_fim_semana)
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _query(
+        """
+        INSERT INTO semanal_receitas (descricao, valor, data_receita, periodo_semana, criado_em)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (descricao.strip() or "Receita Semanal", float(valor), data_receita.isoformat(), periodo, agora),
+    )
+
+
+def listar_receitas_semanais(data_inicio: date = None, data_fim: date = None) -> List[Dict[str, Any]]:
+    if data_inicio and data_fim:
+        periodo = _format_periodo(data_inicio, data_fim)
+        return _query(
+            """
+            SELECT id, descricao, valor, data_receita, periodo_semana, criado_em
+            FROM semanal_receitas
+            WHERE (data_receita BETWEEN ? AND ?) OR (periodo_semana = ?)
+            ORDER BY data_receita DESC, id DESC
+            """,
+            (data_inicio.isoformat(), data_fim.isoformat(), periodo),
+        )
+    return _query(
+        """
+        SELECT id, descricao, valor, data_receita, periodo_semana, criado_em
+        FROM semanal_receitas
+        ORDER BY data_receita DESC, id DESC
+        """
+    )
+
+
+def excluir_receita_semanal(receita_id: int) -> None:
+    _query("DELETE FROM semanal_receitas WHERE id = ?", (int(receita_id),))
